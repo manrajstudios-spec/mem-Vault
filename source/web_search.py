@@ -102,4 +102,4 @@ def search(queries):
     return retrieved_info
 
 if __name__ == "__main__":
-    print(search(["Fabel 5 V/S GPT 5.6","Fabel 5 Ban Reason"]))
+    print(search(["Diwane Hum Nahi Hote Diwani Raat Ati Hai Song Info Latest"]))

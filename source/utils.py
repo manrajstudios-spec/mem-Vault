@@ -31,9 +31,8 @@ def make_chunks(text,limit=800):
             
             cur_chunk = sent
         elif len(added) == limit:
-            if cur_chunk:
-                chunks.append(cur_chunk)
-                cur_chunk = ""
+            chunks.append(added)
+            cur_chunk = ""
         else:
             cur_chunk = added
         
@@ -46,7 +45,7 @@ def make_chunks(text,limit=800):
     return chunks
 
 def make_groups(chunks,threshold=0.6,tabels=None): 
-    start_time  =time.monotonic()
+    start_time = time.monotonic()
        
     tuple_keywords = make_keywords(chunks)
     
@@ -69,7 +68,7 @@ def make_groups(chunks,threshold=0.6,tabels=None):
     print(f"embed and keyword time: {time.monotonic() - start_time}")
     start_time = time.monotonic()
     
-    # GRouping Logic 
+    # Grouping Logic 
     sims = embeddings @ embeddings.T
     np.fill_diagonal(sims,float("-inf"))
     
@@ -107,4 +106,6 @@ def make_groups(chunks,threshold=0.6,tabels=None):
     print(f"finding group: {time.monotonic() - start_time}")
 
     print(f"group: {len(groups)}")
+
     return groups,keywords,embeddings,tabel_embeds if tabels else None
+
