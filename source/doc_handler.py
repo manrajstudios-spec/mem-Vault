@@ -219,7 +219,6 @@ def rerank(embeddings,query_embeddings,query_keywords,keywords,top_k=10):
     
     key_score = np.array(key_score)
         
-            
     sims = 0.6 * e_sims + 0.4 * np.log1p(key_score)
     
     selected = []
