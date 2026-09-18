@@ -21,9 +21,9 @@ def ask_user(to_ask,options=[],empty=False):
         if user_input:
             return user_input
                 
-chat_hist = [] # goees as context
+chat_hist = [] 
 to_keep = 5
-
+ 
 def send_chats():
     global chat_hist
     to_send = []
