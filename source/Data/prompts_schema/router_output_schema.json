@@ -2,87 +2,74 @@
   "type": "object",
   "properties": {
     "websearch": {
-      "type": "object",
-      "properties": {
-        "needed": {
-          "type": "boolean"
-        },
-        "queries": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "required": ["needed", "queries"]
+      "type": "array",
+      "description": "Standalone web search queries needed to answer the user, resolved of pronouns/context. Empty array if none needed.",
+      "items": { "type": "string" }
     },
     "doc_retrieval": {
-      "type": "object",
-      "properties": {
-        "needed": {
-          "type": "boolean"
-        },
-        "doc_name": {
-          "type": "string"
-        },
-        "queries": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "required": ["needed", "doc_name", "queries"]
+      "type": "array",
+      "description": "Queries to run against attached documents. Empty array if no documents are relevant or none were attached.",
+      "items": { "type": "string" }
     },
     "rag_retrieval": {
-      "type": "object",
-      "properties": {
-        "needed": {
-          "type": "boolean"
-        },
-        "queries": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "required": ["needed", "queries"]
-    },
-    "user_events": {
       "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "description": "Queries to run against the long-term RAG knowledge base. Empty array if not needed.",
+      "items": { "type": "string" }
     },
     "user_preferences": {
       "type": "array",
+      "description": "New or changed preferences belonging to the user (or a closely related person the user explicitly ties to their own decisions). Do not include third-party opinions mentioned only in passing.",
       "items": {
-        "type": "string"
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "Existing id if updating, otherwise a new short id." },
+          "subject": { "type": "string", "description": "Who the preference belongs to, usually 'user'." },
+          "statement": { "type": "string" },
+          "action": { "type": "string", "enum": ["add", "update", "no_change"] },
+          "replaces": { "type": "string", "description": "Id of the existing preference this supersedes, required if action is 'update'." }
+        },
+        "required": ["statement", "action"]
       }
     },
     "user_decisions": {
       "type": "array",
+      "description": "New or changed decisions the user has committed to going forward.",
       "items": {
-        "type": "string"
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "statement": { "type": "string" },
+          "action": { "type": "string", "enum": ["add", "update", "no_change"] },
+          "replaces": { "type": "string", "description": "Id of the existing decision this supersedes, required if action is 'update'." }
+        },
+        "required": ["statement", "action"]
+      }
+    },
+    "user_events": {
+      "type": "array",
+      "description": "Things that happened to or were done by the user (outcomes already occurred, good or bad). Not forward-looking.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "statement": { "type": "string" },
+          "sentiment": { "type": "string", "enum": ["positive", "negative", "neutral"] }
+        },
+        "required": ["statement", "sentiment"]
       }
     },
     "user_tasks": {
       "type": "array",
+      "description": "Work the user started, is planning, or is deferring to another time.",
       "items": {
         "type": "object",
         "properties": {
-          "task_name": {
-            "type": "string"
-          },
-          "task_des": {
-            "type": "string"
-          },
-          "date_made": {
-            "type": "string"
-          }
+          "id": { "type": "string" },
+          "statement": { "type": "string" },
+          "status": { "type": "string", "enum": ["open", "in_progress", "done", "deferred"] },
+          "action": { "type": "string", "enum": ["add", "update", "no_change"] },
+          "replaces": { "type": "string", "description": "Id of the existing task this supersedes, required if action is 'update'." }
         },
-        "required": ["task_name", "task_des", "date_made"]
+        "required": ["statement", "status", "action"]
       }
     }
   },
@@ -90,9 +77,9 @@
     "websearch",
     "doc_retrieval",
     "rag_retrieval",
-    "user_events",
     "user_preferences",
     "user_decisions",
+    "user_events",
     "user_tasks"
   ]
 }

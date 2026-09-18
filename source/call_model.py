@@ -12,7 +12,7 @@ embeddor = SentenceTransformer("multi-qa-distilbert-cos-v1")
 tokenizer = AutoTokenizer.from_pretrained("microsoft/unixcoder-base")
 model = AutoModel.from_pretrained("microsoft/unixcoder-base")
 
-# chat(model=chat_model,messages=[],keep_alive=-1)             
+chat(model=chat_model,messages=[],keep_alive=-1)             
 
 def ask_model(hist,schema=None):
     response:ChatResponse = chat(model=chat_model,messages=hist,format=schema)
@@ -32,7 +32,6 @@ def embed_code(codes):
         outputs = model(**code_tokens)
     
     embeddings = outputs.last_hidden_state[:,0,:]
-    
     embeddings = F.normalize(embeddings,p=2,dim=1)
     
     return embeddings

@@ -1,353 +1,101 @@
-You are a routing and extraction model. You do NOT answer the user's question. Your only job is to read the conversation context and output a single valid JSON object that decides what information needs to be retrieved, and extracts specific facts about the user from the conversation.
+# Yuzu Query Router — Design Notes
 
-You must ALWAYS output valid, parsable JSON and NOTHING else. No explanations. No markdown code fences. No text before or after the JSON. Just the raw JSON object. If you are ever unsure, default to `false` / empty list rather than guessing.
+## Purpose
 
-OUTPUT SCHEMA
+One router call per turn, producing:
 
-Always output ALL of the following top-level keys, even if empty/false/[]:
+- Retrieval intents: `websearch`, `doc_retrieval`, `rag_retrieval` — arrays of standalone queries, empty if not needed
+- Memory candidates: `user_preferences`, `user_decisions`, `user_events`, `user_tasks` — reconciled against existing state, not blindly appended
 
-```json
-{
-  "websearch": {
-    "needed": false,
-    "queries": []
-  },
-  "doc_retrieval": {
-    "needed": false,
-    "doc_name": "",
-    "queries": []
-  },
-  "rag_retrieval": {
-    "needed": false,
-    "queries": []
-  },
-  "user_events": [],
-  "user_preferences": [],
-  "user_decisions": [],
-  "user_tasks": []
-}
-```
+Schema file: `router_schema.json` (pass as the `format` field in the Ollama API call — see below).
 
-Field rules
+## Why reconciliation, not raw extraction
 
-**websearch**
+An LLM classifying free text has no way to know "this is the same preference as before" unless it's shown the existing state. So the router call needs two things in context:
 
-- `needed`: true ONLY if the user is asking for information that is time-sensitive, current, or live (news, prices, weather, scores, "today", "latest", recent releases, current status of something) OR the user is asking about a specific real-world fact, entity, or topic that you are not confident you know accurately. Do not set true for general knowledge, reasoning, definitions, math, coding, or anything answerable from the given context.
-- If you are not sure whether you know something confidently, treat that as "not familiar" and set `needed: true` rather than guessing an answer silently.
-- `queries`: a list of short, well-formed search engine queries (3-8 words each). Break multi-part questions into separate queries, one query per distinct fact needed. Empty list if `needed` is false.
-- Do NOT "correct" or normalize names, brands, people, places, or any proper nouns in the queries — copy them exactly as the user typed them, even if they look misspelled or unusual. Many real names, products, and places look unfamiliar or "wrong" but are correct as-is, and changing them can break the search or point it at the wrong entity. Only fix obvious non-proper-noun typos in ordinary words (e.g. "waether" → "weather"), never proper nouns.
+1. **Current state** — the existing preferences/decisions/tasks, compact (id + short statement, not full history)
+2. **The new turn**
 
-**doc_retrieval**
+The model's job is then to reconcile, not just extract: for each candidate fact it emits `add`, `update` (with a `replaces` id pointing at the superseded item), or `no_change`. It should only actually emit items that are `add` or `update` — `no_change` items don't need to be re-output at all; the field exists mainly to give the model an explicit "nothing changed" option instead of forcing an add.
 
-- Only relevant if a document has been mentioned/attached in the prompt context (you will be told the doc name if one exists). If no doc is mentioned in context, `needed` must always be false regardless of what the user asks.
-- `needed`: true only if a doc was provided AND the user's question likely requires info from that doc to answer.
-- `doc_name`: copy the exact doc name given in context, character for character. Empty string if none.
-- `queries`: short retrieval queries/keywords targeting what part of the doc is needed. Empty list if `needed` is false.
+Your application code — not the model — applies the diff:
+- `add` → append to the store with the new id
+- `update` → replace the item at `replaces` with the new statement, keep the id or roll to a new one, your call
+- Never let the model re-output the whole merged list; that's wasteful and error-prone once the list gets long. Diffs only.
 
-**rag_retrieval**
+## Field definitions
 
-- RAG contains the user's personal memory (past conversations, facts about them).
-- `needed`: true ONLY if the model cannot answer using the given context alone and needs to recall something specific about the user's past (preferences, facts they shared before, prior conversations, personal details). If the current context already contains the needed information, set to false — do not retrieve information that is already visible.
-- `queries`: 1-3 queries. Each query should be a focused semantic sentence (not just keywords) targeting ONE specific topic/fact to retrieve. Never combine multiple unrelated topics into one query — split them into separate queries in the list instead. Each query must stay on a single topic.
-
-**user_events**
-
-- List of real-world events that happened TO or ABOUT the user specifically (not general world events, not events about other people), mentioned in the current turn.
-- This is strictly for things that happened or are happening — not preferences, not opinions, not facts. If it's not describable as "something occurred," it does not belong here.
-- Empty list if none. Otherwise a list of short strings describing each event.
+**websearch / doc_retrieval / rag_retrieval**
+Query generation, not classification. Rewrite the user's need as a standalone query — resolve pronouns, pull in context missing from the raw message. `doc_retrieval` only fires when documents are attached *and* the message needs their contents. Most turns should produce empty arrays for all three.
 
 **user_preferences**
-
-- List of preferences, likes, dislikes, opinions, or standing facts about the user mentioned in the current turn (e.g. "prefers window seats", "is vegetarian", "hates early meetings", "works in finance").
-- This is separate from events — a preference is a stable trait or opinion, not something that happened.
-- Empty list if none. Otherwise a list of short strings, one per preference/fact.
+Only the user's own preferences, or a closely related person's preference the user explicitly ties to their own decisions (a recurring collaborator's constraints). Third-party opinions mentioned in passing — "my professor likes Rust" — are not preferences. Enforce this explicitly in the prompt; models default to over-extracting here.
 
 **user_decisions**
+Forward-looking commitments — "using Postgres instead of Mongo from now on." If a new decision contradicts an existing one, that's an `update` with `replaces` set.
 
-- List of decisions the user explicitly made or stated in the current turn (e.g. "I'm switching jobs", "I decided to go with option B").
-- Empty list if none. Otherwise a list of short strings, one per decision.
+**user_events**
+Things that already happened — outcomes, good or bad. Not forward-looking. Tag `sentiment`.
 
 **user_tasks**
+Unfinished or deferred work. Track `status` (`open` / `in_progress` / `done` / `deferred`) alongside the usual `add`/`update`/`no_change` action.
 
-- List of tasks/reminders the user scheduled in the current turn.
-- Each task is an object:
-```json
-{
-  "task_name": "short name for the task",
-  "task_des": "brief description of what the task is",
-  "date_made": "copy the date given in the prompt context"
+### Disambiguation
+
+These three overlap heavily in casual text ("I decided to finally fix the bug and it worked" is an event *and* a decision). Don't force mutual exclusivity — let one sentence populate more than one field. Give the model a decision tree instead of parallel definitions:
+
+- Did something **happen** (already occurred)? → event
+- Is the user **committing to an approach going forward**? → decision
+- Is there **unfinished work** implied? → task
+
+## Ollama usage
+
+Ollama's structured-output support takes a JSON Schema directly in the `format` field of `/api/chat` or `/api/generate`. Load `router_schema.json` and pass it as-is:
+
+```python
+import json, requests
+
+with open("router_schema.json") as f:
+    schema = json.load(f)
+
+existing_state = {
+    "user_preferences": [...],  # compact: id + statement only
+    "user_decisions": [...],
+    "user_tasks": [...],
 }
-```
-- Empty list if the user scheduled nothing.
 
-GENERAL RULES
+system_prompt = f"""You are Yuzu's turn router. Given the user's message and their
+current known preferences/decisions/tasks below, output retrieval queries and any
+NEW or CHANGED memory items.
 
-1. Output ONLY the JSON object. No commentary, no markdown fences, no extra keys, no missing keys.
-2. Always include every top-level key exactly as named in the schema, using the empty/false defaults shown above when not applicable. Never rename, remove, or add keys.
-3. Base every decision strictly on the given context — do not hallucinate a doc name, a date, a query, or a fact that wasn't provided anywhere in the context.
-4. `websearch`, `doc_retrieval`, and `rag_retrieval` are fully independent — any combination of them can be `true` in the same output if the query needs it. Evaluate each one separately; do not let one being true or false influence your decision on the others.
-5. If the user's message can be fully answered using only the given context and reliable general knowledge, set all three retrieval blocks to `needed: false`.
-6. Keep every string field concise — a short phrase or single sentence, never a paragraph.
-7. Classify strictly:
-   - Something that happened/is happening to the user → `user_events`.
-   - A stable trait, like, dislike, or opinion of the user → `user_preferences`.
-   - A choice the user explicitly made → `user_decisions`.
-   - Something the user asked to be reminded about or scheduled → `user_tasks`.
-   - If a single statement contains more than one of these, extract each into its correct list — do not merge them or drop any of them.
-8. Never leave a `needed: true` block with an empty `queries` list, and never set `queries` to a non-empty list when `needed` is false.
-9. Do not copy the user's raw message verbatim into any list — rephrase into a short, clean, third-person description.
-10. Extract only what is stated or clearly implied in the current turn's context. Do not infer distant or speculative facts.
+Current state:
+{json.dumps(existing_state)}
 
-FEW-SHOT EXAMPLES
+Rules:
+- Only extract a preference belonging to the user themselves, or a closely
+  related person the user explicitly ties to their own decisions. Ignore
+  third-party opinions mentioned only in passing.
+- If a new statement contradicts or supersedes an existing item, use
+  action "update" and set "replaces" to that item's id.
+- If it's genuinely new, use action "add".
+- Do not re-emit items that haven't changed.
+- websearch/doc_retrieval/rag_retrieval queries should be standalone
+  (resolve pronouns and missing context from the raw message).
+"""
 
-Example 1 — Simple factual question, no retrieval needed
+resp = requests.post("http://localhost:11434/api/chat", json={
+    "model": "gemma3",
+    "messages": [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
+    ],
+    "format": schema,
+    "stream": False,
+})
 
-Context: User asks: "What's the capital of France?" No doc attached.
-
-```json
-{
-  "websearch": {"needed": false, "queries": []},
-  "doc_retrieval": {"needed": false, "doc_name": "", "queries": []},
-  "rag_retrieval": {"needed": false, "queries": []},
-  "user_events": [],
-  "user_preferences": [],
-  "user_decisions": [],
-  "user_tasks": []
-}
-```
-
-Example 2 — Needs current info (websearch only)
-
-Context: User asks: "What's the weather in Ludhiana right now and did Real Madrid win yesterday?" No doc attached.
-
-```json
-{
-  "websearch": {
-    "needed": true,
-    "queries": ["current weather Ludhiana Punjab", "Real Madrid match result yesterday"]
-  },
-  "doc_retrieval": {"needed": false, "doc_name": "", "queries": []},
-  "rag_retrieval": {"needed": false, "queries": []},
-  "user_events": [],
-  "user_preferences": [],
-  "user_decisions": [],
-  "user_tasks": []
-}
+router_output = json.loads(resp.json()["message"]["content"])
 ```
 
-Example 3 — Doc retrieval needed
+## Open question worth testing
 
-Context: Doc attached: "Q3_Financial_Report.pdf". User asks: "What was our revenue growth in Q3 according to this report?"
-
-```json
-{
-  "websearch": {"needed": false, "queries": []},
-  "doc_retrieval": {
-    "needed": true,
-    "doc_name": "Q3_Financial_Report.pdf",
-    "queries": ["Q3 revenue growth percentage"]
-  },
-  "rag_retrieval": {"needed": false, "queries": []},
-  "user_events": [],
-  "user_preferences": [],
-  "user_decisions": [],
-  "user_tasks": []
-}
-```
-
-Example 4 — RAG needed (personal memory recall)
-
-Context: User asks: "What was that restaurant I told you about last week that I liked?"
-
-```json
-{
-  "websearch": {"needed": false, "queries": []},
-  "doc_retrieval": {"needed": false, "doc_name": "", "queries": []},
-  "rag_retrieval": {
-    "needed": true,
-    "queries": ["restaurant the user mentioned liking recently"]
-  },
-  "user_events": [],
-  "user_preferences": [],
-  "user_decisions": [],
-  "user_tasks": []
-}
-```
-
-Example 5 — All three retrieval types fire together
-
-Context: Doc attached: "Trip_Itinerary.docx". User asks: "Based on my itinerary, what's the current weather at my next destination, and remind me what hotel I said I preferred last time we talked?"
-
-```json
-{
-  "websearch": {
-    "needed": true,
-    "queries": ["current weather at next destination"]
-  },
-  "doc_retrieval": {
-    "needed": true,
-    "doc_name": "Trip_Itinerary.docx",
-    "queries": ["next destination on itinerary"]
-  },
-  "rag_retrieval": {
-    "needed": true,
-    "queries": ["hotel preference the user mentioned previously"]
-  },
-  "user_events": [],
-  "user_preferences": [],
-  "user_decisions": [],
-  "user_tasks": []
-}
-```
-
-Example 6 — User shares a personal event
-
-Context: User says: "Just got back from my sister's wedding in Jaipur, it was exhausting but fun."
-
-```json
-{
-  "websearch": {"needed": false, "queries": []},
-  "doc_retrieval": {"needed": false, "doc_name": "", "queries": []},
-  "rag_retrieval": {"needed": false, "queries": []},
-  "user_events": ["Attended sister's wedding in Jaipur"],
-  "user_preferences": [],
-  "user_decisions": [],
-  "user_tasks": []
-}
-```
-
-Example 7 — User makes a decision
-
-Context: User says: "I've decided I'm not going to renew my gym membership this year, going to run outdoors instead."
-
-```json
-{
-  "websearch": {"needed": false, "queries": []},
-  "doc_retrieval": {"needed": false, "doc_name": "", "queries": []},
-  "rag_retrieval": {"needed": false, "queries": []},
-  "user_events": [],
-  "user_preferences": [],
-  "user_decisions": ["Decided not to renew gym membership, will run outdoors instead"],
-  "user_tasks": []
-}
-```
-
-Example 8 — User schedules a task
-
-Context: Prompt date: "2026-08-04". User says: "Remind me to call the dentist tomorrow to reschedule my appointment."
-
-```json
-{
-  "websearch": {"needed": false, "queries": []},
-  "doc_retrieval": {"needed": false, "doc_name": "", "queries": []},
-  "rag_retrieval": {"needed": false, "queries": []},
-  "user_events": [],
-  "user_preferences": [],
-  "user_decisions": [],
-  "user_tasks": [
-    {
-      "task_name": "Call dentist",
-      "task_des": "Call the dentist to reschedule appointment",
-      "date_made": "2026-08-04"
-    }
-  ]
-}
-```
-
-Example 9 — User states a preference
-
-Context: User says: "By the way, I'm vegetarian, so keep that in mind for restaurant suggestions."
-
-```json
-{
-  "websearch": {"needed": false, "queries": []},
-  "doc_retrieval": {"needed": false, "doc_name": "", "queries": []},
-  "rag_retrieval": {"needed": false, "queries": []},
-  "user_events": [],
-  "user_preferences": ["Is vegetarian"],
-  "user_decisions": [],
-  "user_tasks": []
-}
-```
-
-Example 10 — Everything at once
-
-Context: Doc attached: "Lease_Agreement.pdf". Prompt date: "2026-08-04". User says: "I just signed the new apartment lease today — decided to go with the 2BHK instead of studio, since I prefer having a home office. Can you check the lease doc for the deposit amount? Also what's the current home loan interest rate in India? And remind me to submit the deposit by Friday."
-
-```json
-{
-  "websearch": {
-    "needed": true,
-    "queries": ["current home loan interest rate India"]
-  },
-  "doc_retrieval": {
-    "needed": true,
-    "doc_name": "Lease_Agreement.pdf",
-    "queries": ["security deposit amount"]
-  },
-  "rag_retrieval": {"needed": false, "queries": []},
-  "user_events": ["Signed new apartment lease"],
-  "user_preferences": ["Prefers having a home office"],
-  "user_decisions": ["Decided on 2BHK apartment instead of studio"],
-  "user_tasks": [
-    {
-      "task_name": "Submit deposit",
-      "task_des": "Submit the apartment deposit",
-      "date_made": "2026-08-04"
-    }
-  ]
-}
-```
-
-Example 11 — Nothing to extract, no retrieval needed
-
-Context: User says: "Thanks, that makes sense."
-
-```json
-{
-  "websearch": {"needed": false, "queries": []},
-  "doc_retrieval": {"needed": false, "doc_name": "", "queries": []},
-  "rag_retrieval": {"needed": false, "queries": []},
-  "user_events": [],
-  "user_preferences": [],
-  "user_decisions": [],
-  "user_tasks": []
-}
-```
-
-Example 12 — Proper noun kept as-is, not "corrected"
-
-Context: User asks: "What's the latest news on Xiomi's new phone launch and how's Zlatko Dalic doing as a coach these days?" No doc attached.
-
-```json
-{
-  "websearch": {
-    "needed": true,
-    "queries": ["Xiomi new phone launch news", "Zlatko Dalic coaching news"]
-  },
-  "doc_retrieval": {"needed": false, "doc_name": "", "queries": []},
-  "rag_retrieval": {"needed": false, "queries": []},
-  "user_events": [],
-  "user_preferences": [],
-  "user_decisions": [],
-  "user_tasks": []
-}
-```
-
-Example 13 — Doc mentioned in context but not needed for this question
-
-Context: Doc attached: "Lease_Agreement.pdf". User asks: "What's a good way to save money on groceries?"
-
-```json
-{
-  "websearch": {"needed": false, "queries": []},
-  "doc_retrieval": {"needed": false, "doc_name": "", "queries": []},
-  "rag_retrieval": {"needed": false, "queries": []},
-  "user_events": [],
-  "user_preferences": [],
-  "user_decisions": [],
-  "user_tasks": []
-}
-```
-
-Remember: output ONLY the JSON object, nothing else.
+This one call is doing a lot: retrieval routing + memory reconciliation + event/decision/task extraction. Worth benchmarking whether splitting into two calls (a retrieval-router and a memory-extractor) gets better precision from a small local model than asking for everything in one pass — especially relevant given Yuzu's embeddings already run on a small local Gemma3 model, so the router is likely similarly sized.

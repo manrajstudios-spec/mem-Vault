@@ -1,8 +1,5 @@
-import re
 import json
 import time
-import spacy
-import pickle
 import pymupdf
 import camelot
 import subprocess
@@ -91,9 +88,7 @@ def load_docs():
         if add_another == "yes":
             continue
         else:
-            break
-                    
-    return loaded_docs
+            break               
 
 def get_data_doc(queries,table_needed=False):
     start_time = time.monotonic()
@@ -231,7 +226,7 @@ def rerank(embeddings,query_embeddings,query_keywords,keywords,top_k=10):
     
     print(f"rerank time: {time.monotonic() - start_time}")
     return selected
-            
+
 if __name__ == "__main__":
     load_docs()
     queries = [

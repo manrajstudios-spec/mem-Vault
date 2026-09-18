@@ -257,10 +257,3 @@ def retrieve_info(queries):
     print(time.monotonic() - shorlist_time)
     
     return info
-
-queries = [
-    "world war II"
-]
-
-print(retrieve_info(queries))
-

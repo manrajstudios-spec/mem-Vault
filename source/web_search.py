@@ -83,7 +83,6 @@ def search(queries):
                 sims = embedding_sim * 0.6 + 0.4 * np.log1p(key_score)
                 
                 selected_groups = set()
-                
                 k = 4
                 
                 for sim in sims:
