@@ -17,6 +17,8 @@ def get_page_text(url):
         return None
 
 def search(queries):
+    main_time = time.monotonic()
+    start_time=time.monotonic()
     embeddings = make_embeddings(queries)
     tuple_keywords = make_keywords(queries)
     
@@ -24,28 +26,35 @@ def search(queries):
         tuple_keywords = [tuple_keywords]
     
     keywords = [{m:c for m,c in tuplee} for tuplee in tuple_keywords]
+    print(f"Keyword embedding time: {time.monotonic() - start_time}")
+    start_time = time.monotonic()
     
     retrieved_info = []
     
     with DDGS() as ddgs:
         for query in queries:
-            start_time = time.monotonic()
             results = ddgs.text(query,max_results=2)
+            print(f"DDGS extract time time: {time.monotonic() - start_time}")
+            start_time = time.monotonic()
             
             for result in results:
                 text = get_page_text(result["href"])
-                print(f"DDGS and extract time: {time.monotonic() - start_time}")
+
+                print(f"page extract time: {time.monotonic() - start_time}")
+                start_time = time.monotonic()
+    
                 if text is None:
                     continue
                 
-                start_time = time.monotonic()
-                
                 chunks = make_chunks(text)
+
+                print(f"Chunking time: {time.monotonic()-start_time}")
+                start_time = time.monotonic()
+
                 groups, web_keywords, web_embeddings, _ = make_groups(chunks)
-                
                 grouped_embeddings = [[web_embeddings[g] for g in group] for group in groups]
                 grouped_keywords_unpacked = [[web_keywords[g] for g in group] for group in groups]
-                
+                                
                 web_grouped_keywords = []
                                     
                 for group_k in grouped_keywords_unpacked:
@@ -57,10 +66,13 @@ def search(queries):
                     
                     web_grouped_keywords.append(to_add)    
                 
+                print(f"Grouping Time: {time.monotonic() - start_time}")
+                start_time = time.monotonic()
+
                 web_group_mean = [np.stack(g_e).mean(axis=0) for g_e in grouped_embeddings]
                 web_group_mean = np.stack(web_group_mean)
                 embedding_sim = embeddings @ web_group_mean.T
-                
+
                 print(f"Embedding sim time: {time.monotonic() - start_time}")
                 start_time = time.monotonic()
                 
@@ -81,7 +93,7 @@ def search(queries):
                 start_time = time.monotonic()
                 
                 sims = embedding_sim * 0.6 + 0.4 * np.log1p(key_score)
-                
+                print(f"Sims Shpe: {sims.shape}")
                 selected_groups = set()
                 k = 4
                 
@@ -91,14 +103,17 @@ def search(queries):
                     for i in ids:
                         selected_groups.add(i)
                 
+                print(f"Selectedx dGroups: {selected_groups}")
                 selected_chunks = [g for i,g in enumerate(chunks) if i in selected_groups]
                 
                 if selected_chunks:
                     retrieved_info.append({"query":query,"page_title":result["title"],"content":selected_chunks})
 
                 print(f"Comparision Time {time.monotonic() - start_time}")
+                start_time = time.monotonic()
     
+    print(f"Full TIme: {time.monotonic() - main_time}")
     return retrieved_info
 
 if __name__ == "__main__":
-    print(search(["Diwane Hum Nahi Hote Diwani Raat Ati Hai Song Info Latest"]))
+    print(search(["GPT 6 Astra ","GPT 6 News"]))

@@ -187,6 +187,9 @@ def save_to_mem(exchanges):
     save_data(groups=stored_groups,embeddings=stored_embeddings,exchanges=stored_chats,mean=stored_mean,keywords=stored_keywords)
 
 def retrieve_major_groups(queries,stored_groups,stored_keywords,stored_mean):
+    if not stored_groups:
+        return []
+    
     embeddings = make_embeddings(queries,True)
     embeddings = np.stack(embeddings)
     
@@ -197,7 +200,7 @@ def retrieve_major_groups(queries,stored_groups,stored_keywords,stored_mean):
 
     selected_groups = set()
     
-    threshold = 0.35
+    threshold = 0.45
 
     embeddings_sims = embeddings @ stored_mean.T
     

@@ -58,30 +58,31 @@ while True:
 
     prompt = ""
     
+    print(f"web info: {web_info}\ndoc info: {doc_info}\nrag info: {rag_info}")
+    
     if web_info:
-        prompt += f"This Data Is Received From Internet And Is Somewhat Similar to users query {web_info}"
+        prompt += f"This Data Is Received From Internet And Is Somewhat Similar to users query {web_info}\n"
 
     if rag_info:
-        prompt += f"This Data Is Extracted From Users Old Chats With Assistant And Is Somewhat Similar to users query {rag_info}"
+        prompt += f"This Data Is Extracted From Users Old Chats With Assistant And Is Somewhat Similar to users query {rag_info}\n"
 
     if doc_info:
-        prompt += f"This Data Is Extracted From documents linked by user in this chat With Assistant And Is Somewhat Similar to users query {doc_info}"
+        prompt += f"This Data Is Extracted From documents linked by user in this chat With Assistant And Is Somewhat Similar to users query {doc_info}\n"
         
     if user_events:
-        prompt += f"These Are Events Happend with user any point in time {user_events}"
+        prompt += f"These Are Events Happend with user any point in time {user_events}\n"
     
     if user_decisions:
-        prompt += f"These Are decisions taken by user any point in time {user_decisions}"
+        prompt += f"These Are decisions taken by user any point in time {user_decisions}\n"
 
     if user_tasks:
-        prompt += f"These Are tasks scheduled by user any point in time {user_tasks}"
+        prompt += f"These Are tasks scheduled by user any point in time {user_tasks}\n"
         
     temp_chat = chat_hist + [{"role":"system","content":prompt},{"role":"user","content":user_input}]
     
     result = ask_model(temp_chat)
     print(f"Assistant: {result}")
-    print(f"route Time: {time.monotonic() - start_time}")
+    print(f"reply Time: {time.monotonic() - start_time}")
     chat_hist.append({"role":"assistant","content":result})
-    start_time = time.monotonic()
     
     
