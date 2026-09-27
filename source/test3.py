@@ -1,7 +1,7 @@
-list1 = [1,2,3]
-strr = "".join([str(d) for d in list1])
+from ddgs import DDGS
 
-print(strr)
-print(int(strr) + 1)
 
-print(list(str(int(strr) + 1)))
+ddgs = DDGS()
+
+print(len(ddgs.text("GPT 6",max_results=1)))
+print(type(ddgs.text("GPT 6",max_results=2)))

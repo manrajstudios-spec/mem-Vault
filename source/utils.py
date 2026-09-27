@@ -5,14 +5,15 @@ from call_model import make_embeddings,make_keywords
 
 make_sentences = spacy.load("en_core_web_sm")
 
-def make_chunks(text,limit=800):
+def make_chunks(text="",limit=800,auto=True,sents=[]):
     start_time = time.monotonic()
 
-    sents = make_sentences(text)
-    sents = [sent.text for sent in sents]
+    if auto:
+        sents = make_sentences(text)
+        sents = [sent.text for sent in sents]
     
-    print(f"sent time: {time.monotonic() - start_time}") 
-    start_time = time.monotonic()
+        print(f"sent time: {time.monotonic() - start_time}") 
+        start_time = time.monotonic()
     
     chunks = []
     cur_chunk = ""
@@ -39,35 +40,35 @@ def make_chunks(text,limit=800):
     if cur_chunk:
         chunks.append(cur_chunk[:min(len(cur_chunk),limit)])
     
-    print(f"Chunk Time: {time.monotonic() - start_time}")
     print(f"chunks: {len(chunks)}")
     
     return chunks
 
-def make_groups(chunks,threshold=0.6,tabels=None): 
-    start_time = time.monotonic()
-       
-    tuple_keywords = make_keywords(chunks)
-    
-    if isinstance(tuple_keywords[0],tuple):
-        tuple_keywords = [tuple_keywords]
-    
-    if tabels is not None:
-        chunks = chunks + tabels
-    
-    embeddings = make_embeddings(chunks)
-    
-    if tabels is not None:
-        tabel_embeds = embeddings[-len(tabels):]
-        tabel_embeds = np.stack(tabel_embeds)
-        embeddings = embeddings[:-len(tabels)]
-
-    embeddings = np.stack(embeddings)
-    keywords = [{keyword:value for keyword,value in tuplee} for tuplee in tuple_keywords]
-    
-    print(f"embed and keyword time: {time.monotonic() - start_time}")
+def make_groups(chunks=[],threshold=0.6,tabels=None,auto=True,embeddings=None,keywords=None): 
     start_time = time.monotonic()
     
+    if auto:
+        tuple_keywords = make_keywords(chunks)
+        
+        if isinstance(tuple_keywords[0],tuple):
+            tuple_keywords = [tuple_keywords]
+        
+        if tabels is not None:
+            chunks = chunks + tabels
+        
+        embeddings = make_embeddings(chunks)
+        
+        if tabels is not None:
+            tabel_embeds = embeddings[-len(tabels):]
+            tabel_embeds = np.stack(tabel_embeds)
+            embeddings = embeddings[:-len(tabels)]
+    
+        embeddings = np.stack(embeddings)
+        keywords = [{keyword:value for keyword,value in tuplee} for tuplee in tuple_keywords]
+    
+        print(f"embed and keyword time: {time.monotonic() - start_time}")
+        start_time = time.monotonic()
+        
     # Grouping Logic 
     sims = embeddings @ embeddings.T
     np.fill_diagonal(sims,float("-inf"))
@@ -103,9 +104,7 @@ def make_groups(chunks,threshold=0.6,tabels=None):
 
     groups = last_groups
     
-    print(f"finding group: {time.monotonic() - start_time}")
-
-    print(f"group: {len(groups)}")
+    print(f"Total groups Formed: {len(groups)}")
 
     return groups,keywords,embeddings,tabel_embeds if tabels else None
 

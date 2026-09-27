@@ -4,7 +4,7 @@ import pymupdf
 import camelot
 import subprocess
 import numpy as np
-from utils import make_groups,make_chunks
+from utils import make_groups_auto_embeddings,make_chunks
 from call_model import make_embeddings,make_keywords
 
 path = "Data/doc_data/attention.pdf"
@@ -45,7 +45,7 @@ def add_doc(path):
 
     chunks = make_chunks(text=text)
     
-    groups,keywords,embeddings,tabel_embeds = make_groups(chunks=chunks,threshold=0.6,tabels=tabels)    
+    groups,keywords,embeddings,tabel_embeds = make_groups_auto_embeddings(chunks=chunks,threshold=0.6,tabels=tabels)    
     
     grouped_embeddings = [[embeddings[g] for g in group] for group in groups]
     grouped_chunks = [[chunks[g] for g in group] for group in groups]
