@@ -46,6 +46,7 @@ def make_chunks(text="",limit=800,auto=True,sents=[]):
 
 def make_groups(chunks=[],threshold=0.6,tabels=None,auto=True,embeddings=None,keywords=None): 
     start_time = time.monotonic()
+    tabel_embeds = None
     
     if auto:
         tuple_keywords = make_keywords(chunks)

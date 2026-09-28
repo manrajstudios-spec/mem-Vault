@@ -1,18 +1,19 @@
 import torch
 from keybert import KeyBERT
-from ollama import ChatResponse,chat
+from ultralytics import YOLO
 import torch.nn.functional as F
+from ollama import ChatResponse,chat
 from transformers import AutoTokenizer,AutoModel
 from sentence_transformers import SentenceTransformer
+from huggingface_hub import hf_hub_download
 
 key_bert = KeyBERT()
 
 chat_model = "granite4.1:3b"
 embeddor = SentenceTransformer("multi-qa-distilbert-cos-v1")
-tokenizer = AutoTokenizer.from_pretrained("microsoft/unixcoder-base")
-model = AutoModel.from_pretrained("microsoft/unixcoder-base")
-
-# chat(model=chat_model,messages=[],keep_alive=-1)             
+# tokenizer = AutoTokenizer.from_pretrained("microsoft/unixcoder-base")
+# model = AutoModel.from_pretrained("microsoft/unixcoder-base")
+table_model = YOLO("models/best.pt")
 
 def ask_model(hist,schema=None):
     response:ChatResponse = chat(model=chat_model,messages=hist,format=schema)
@@ -25,14 +26,14 @@ def make_embeddings(messages,normalize=False):
 def make_keywords(data):
     return key_bert.extract_keywords(data,diversity=0.4,stop_words='english')
 
-def embed_code(codes):
-    code_tokens = tokenizer(codes,add_special_tokens=False)
-
-    with torch.no_grad():
-        outputs = model(**code_tokens)
-    
-    embeddings = outputs.last_hidden_state[:,0,:]
-    embeddings = F.normalize(embeddings,p=2,dim=1)
-    
-    return embeddings
+# def embed_code(codes):
+    # code_tokens = tokenizer(codes,add_special_tokens=False)
+# 
+    # with torch.no_grad():
+        # outputs = model(**code_tokens)
+    # 
+    # embeddings = outputs.last_hidden_state[:,0,:]
+    # embeddings = F.normalize(embeddings,p=2,dim=1)
+    # 
+    # return embeddings
     

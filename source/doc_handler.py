@@ -1,35 +1,76 @@
+import cv2
 import json
 import time
+import pickle
 import pymupdf
 import camelot
 import subprocess
 import numpy as np
-from utils import make_groups_auto_embeddings,make_chunks
-from call_model import make_embeddings,make_keywords
+from pathlib import Path
+from pdf2image import convert_from_path
+from concurrent.futures import ThreadPoolExecutor
+from utils import make_groups,make_chunks,make_sentences
+from call_model import make_embeddings,make_keywords,table_model
 
 path = "Data/doc_data/attention.pdf"
+parent_temp_pdf_images_path = "Data/temp_pdf_images/"
 loaded_docs = []
+
+def read_doc_page(info):
+    page=info[1]
+    i=info[0]
+
+    text_extracted = page.get_text("text")
+    pix = page.get_pixmap()
+    img_data = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
+    cv_im = cv2.cvtColor(img_data, cv2.COLOR_RGB2BGR)
+        
+    return {"page_num":i,"page_text":text_extracted,"have_table":False,"cv_im":cv_im}
+
+def open_pdf(path):
+    return pymupdf.open(path)
+
+def chunk_each_page(sents):
+    return make_chunks(auto=False,sents=sents)
 
 def add_doc(path):
     start_time = time.monotonic()
+    super_start_time=time.monotonic()
+
     doc = pymupdf.open(path)
     
+    print(f"----------Pdf Opening Time: {time.monotonic() - start_time}----------------------")
+    start_time = time.monotonic()
+    
     doc_name = path.split("/")[-1].split(".")[0]
-    
-    text_per_page = {}
+    text_per_page = []
     tabel_pages = []
+    pool = ThreadPoolExecutor(max_workers=8)
+    
+    pages_data = list(pool.map(read_doc_page,[(i,page) for i,page in enumerate(doc)]))
+    text_per_page = [page["page_text"] for page in pages_data]
+    
+    print(f"----------Extract Text And Pixmap : {time.monotonic() - start_time}---------------------")
+    start_time = time.monotonic()
+    
+    all_images_cv = [p["cv_im"] for p in pages_data]
+    yolo_output = table_model(all_images_cv,batch=16,verbose=False)
+    tabel_pages = []
+    
+    for i,yo in enumerate(yolo_output):
+        if len(yo.boxes) > 0:
+                tabel_pages.append(i)
+    
+    print(f"--------------------Detecting Tabel From Pixmap Time: {time.monotonic() - start_time}---------------------")
+    start_time = time.monotonic()
         
-    for i,page in enumerate(doc):
-        text_per_page[i] = page.get_text("text")
+    if tabel_pages:
+        df_tabels = camelot.read_pdf(path,pages=",".join([str(p+1) for p in tabel_pages]),flavor="stream",parallel=True,cpu_count=4)
+    else:
+        df_tabels = []
         
-        tabel_finder = page.find_tables()
-    
-        if tabel_finder.tables:
-            tabel_pages.append(i)
-    
-    df_tabels = camelot.read_pdf(path,pages=",".join([str(p+1) for p in tabel_pages]),flavor="stream",parallel=True,cpu_count=4)
-    
     tabels = []
+    
     for tabel in df_tabels:
         tabel_dict = tabel.df.to_dict(orient="records")
         table_str = json.dumps(tabel_dict)
@@ -38,14 +79,41 @@ def add_doc(path):
     if not tabels:
         tabels = None
     
-    text = "\n".join(text_per_page.values())
+    text = "\n".join(text_per_page)
     
-    print(f"tabel text time: {time.monotonic() - start_time}")
+    print(f"--------------------Extract Tabels Data: {time.monotonic() - start_time}-------------------------------------")
     start_time = time.monotonic()
 
     chunks = make_chunks(text=text)
+
+    print(f"--------Chunksing Time: {time.monotonic() - start_time}---------------------------")
+    start_time = time.monotonic()
     
-    groups,keywords,embeddings,tabel_embeds = make_groups_auto_embeddings(chunks=chunks,threshold=0.6,tabels=tabels)    
+    old_len = len(chunks)
+    
+    chunks.extend(tabels)
+    
+    embeddings= make_embeddings(chunks)
+    tuple_keywords= make_keywords(chunks)
+    
+    print(f"-----------------Embedding KeyBert Time: {time.monotonic() - start_time}-----------------------")
+    start_time = time.monotonic()
+
+    tabel_embeds = embeddings[:old_len]
+    embeddings = embeddings[:old_len]
+    tuple_keywords = tuple_keywords[:old_len]
+    
+    embeddings = np.stack(embeddings)
+    
+    if isinstance(tuple_keywords,tuple):
+        tuple_keywords = [tuple_keywords]
+    
+    keywords = [{m:c for m,c in tuplee} for tuplee in tuple_keywords]
+    
+    print(f"---------------------Keyword Setting Time: {time.monotonic() - start_time}---------------------")
+    start_time = time.monotonic()
+     
+    groups,_,_,_ = make_groups(chunks=chunks,threshold=0.6,tabels=tabels,auto=False,embeddings=embeddings,keywords=keywords)    
     
     grouped_embeddings = [[embeddings[g] for g in group] for group in groups]
     grouped_chunks = [[chunks[g] for g in group] for group in groups]
@@ -65,7 +133,11 @@ def add_doc(path):
     group_mean = [np.stack(g_e).mean(axis=0) for g_e in grouped_embeddings]
     group_mean = np.stack(group_mean)
     
+    print(f"------------------Grouping Time: {time.monotonic() - start_time}--------------------------")
+    
     print(f"chunks: {len(chunks)}, groups: {len(groups)},shape: {group_mean.shape}")
+    
+    print(f"------------------------------TOTAL TIME TAKEN: {time.monotonic() - super_start_time}---------------------------------")
     
     return {"doc_name":doc_name,"chunks":chunks,"group_means":group_mean,"grouped_keywords":grouped_keywords,"tabels":tabels,"tabel_embeds":tabel_embeds,"groups":groups,"embeddings":embeddings,"keywords":keywords}
 

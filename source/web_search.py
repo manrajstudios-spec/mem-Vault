@@ -30,14 +30,14 @@ def get_relevant_data_from_page(data):
         
         web_grouped_keywords.append(to_add)    
     
-    print(f"WEB CHUNKS Grouping Time: {time.monotonic() - start_time}")
+    print(f"----------------WEB CHUNKS Grouping Time: {time.monotonic() - start_time}-----------------------")
     start_time = time.monotonic()
 
     web_group_mean = [np.stack(g_e).mean(axis=0) for g_e in grouped_embeddings]
     web_group_mean = np.stack(web_group_mean)
     embedding_sim = (web_group_mean @ query_embedding.T).flatten()
     
-    print(f"WEB CHUNKS Embedding sim time: {time.monotonic() - start_time}")
+    print(f"----------------WEB CHUNKS Embedding sim time: {time.monotonic() - start_time}-----------------")
     start_time = time.monotonic()
     
     key_scores = []
@@ -63,7 +63,7 @@ def get_relevant_data_from_page(data):
         cur = groups[g]
         selected_chunks.extend([data["chunks"][i] for i in cur])    
     
-    print(f"FINAL COMPARISION TIME: {time.monotonic() - start_time}")
+    print(f"-------------------FINAL COMPARISION TIME: {time.monotonic() - start_time}-----------------")
     print("----------One Query Comparision Done-------------------------\n")
 
     return selected_chunks
@@ -88,7 +88,7 @@ def get_page_text(data):
 def get_urls(query_data):
     start_time = time.monotonic()
         
-    ddgs_data = DDGS().text(query_data["query"],max_results=2)
+    ddgs_data = DDGS().text(query_data["query"],max_results=2,backend="lite")
     
     print(f"------------FINDING URL SINGLE TIME: {time.monotonic() - start_time}------------------")
     
@@ -207,5 +207,5 @@ def web_search(queries=[]):
     print(f"-----------------FULL TIME: {time.monotonic() - search_started_time}----------------\n")
 
 if __name__ == "__main__":
-    queries = ["GPT 6 Astra ","Chat Gpt latest News"]
+    queries = ["GPT 6 Astra ","Claude Fable 5"]
     web_search(queries)
