@@ -6,7 +6,7 @@ import pymupdf
 import camelot
 import subprocess
 import numpy as np
-from pathlib import Path
+from itertools import repeat
 from pdf2image import convert_from_path
 from concurrent.futures import ThreadPoolExecutor
 from utils import make_groups,make_chunks,make_sentences
@@ -65,19 +65,16 @@ def add_doc(path):
     start_time = time.monotonic()
         
     if tabel_pages:
-        df_tabels = camelot.read_pdf(path,pages=",".join([str(p+1) for p in tabel_pages]),flavor="stream",parallel=True,cpu_count=4)
+        extracted_tables = camelot.read_pdf(path,pages=",".join([str(p+1) for p in tabel_pages]),flavor="stream",parallel=True,cpu_count=4)
     else:
-        df_tabels = []
+        extracted_tables = []
         
-    tabels = []
+    doc_tables = []
     
-    for tabel in df_tabels:
+    for tabel in extracted_tables:
         tabel_dict = tabel.df.to_dict(orient="records")
         table_str = json.dumps(tabel_dict)
-        tabels.append(table_str)
-    
-    if not tabels:
-        tabels = None
+        doc_tables.append(table_str)
     
     text = "\n".join(text_per_page)
     
@@ -91,55 +88,54 @@ def add_doc(path):
     
     old_len = len(chunks)
     
-    chunks.extend(tabels)
+    chunks.extend(doc_tables)
     
-    embeddings= make_embeddings(chunks)
-    tuple_keywords= make_keywords(chunks)
+    doc_embeddings= make_embeddings(chunks)
+    doc_tuple_keywords= make_keywords(chunks)
     
     print(f"-----------------Embedding KeyBert Time: {time.monotonic() - start_time}-----------------------")
     start_time = time.monotonic()
 
-    tabel_embeds = embeddings[:old_len]
-    embeddings = embeddings[:old_len]
-    tuple_keywords = tuple_keywords[:old_len]
+    doc_tabel_embeds = doc_embeddings[old_len:]
+    doc_embeddings = doc_embeddings[:old_len]
+    doc_tuple_keywords = doc_tuple_keywords[:old_len]
     
-    embeddings = np.stack(embeddings)
+    doc_embeddings = np.stack(doc_embeddings)
     
-    if isinstance(tuple_keywords,tuple):
-        tuple_keywords = [tuple_keywords]
+    if isinstance(doc_tuple_keywords,tuple):
+        doc_tuple_keywords = [doc_tuple_keywords]
     
-    keywords = [{m:c for m,c in tuplee} for tuplee in tuple_keywords]
+    doc_keywords = [{m:c for m,c in tuplee} for tuplee in doc_tuple_keywords]
     
     print(f"---------------------Keyword Setting Time: {time.monotonic() - start_time}---------------------")
     start_time = time.monotonic()
      
-    groups,_,_,_ = make_groups(chunks=chunks,threshold=0.6,tabels=tabels,auto=False,embeddings=embeddings,keywords=keywords)    
+    groups,_,_,_ = make_groups(chunks=chunks,threshold=0.6,tabels=doc_tables,auto=False,embeddings=doc_embeddings,keywords=doc_keywords)    
     
-    grouped_embeddings = [[embeddings[g] for g in group] for group in groups]
-    grouped_chunks = [[chunks[g] for g in group] for group in groups]
-    grouped_keywords_unpacked = [[keywords[g] for g in group] for group in groups]
+    doc_grouped_embeddings = [[doc_embeddings[g] for g in group] for group in groups]
+    doc_grouped_keywords_unpacked = [[doc_keywords[g] for g in group] for group in groups]
     
-    grouped_keywords = []
+    # Grouping Keywords So We Get One Dict Per Group
+    doc_groups_keywords = []
     
-    for group_k in grouped_keywords_unpacked:
+    for group_k in doc_grouped_keywords_unpacked:
         to_add = {}
         
         for dictt in group_k:
             for keyword,value in dictt.items():
                 to_add[keyword] = to_add.get(keyword,0) + value
         
-        grouped_keywords.append(to_add)    
-    
-    group_mean = [np.stack(g_e).mean(axis=0) for g_e in grouped_embeddings]
-    group_mean = np.stack(group_mean)
+        doc_groups_keywords.append(to_add)    
+
+    groups_mean = [np.stack(g_e).mean(axis=0) for g_e in doc_grouped_embeddings]
     
     print(f"------------------Grouping Time: {time.monotonic() - start_time}--------------------------")
     
-    print(f"chunks: {len(chunks)}, groups: {len(groups)},shape: {group_mean.shape}")
+    print(f"chunks: {len(chunks)}, groups: {len(groups)}")
     
     print(f"------------------------------TOTAL TIME TAKEN: {time.monotonic() - super_start_time}---------------------------------")
     
-    return {"doc_name":doc_name,"chunks":chunks,"group_means":group_mean,"grouped_keywords":grouped_keywords,"tabels":tabels,"tabel_embeds":tabel_embeds,"groups":groups,"embeddings":embeddings,"keywords":keywords}
+    return {"doc_name":doc_name,"chunks":chunks,"groups_mean":groups_mean,"groups_keywords":doc_groups_keywords,"tables":doc_tables,"table_embeds":doc_tabel_embeds,"groups":groups,"embeddings":doc_embeddings,"keywords":doc_keywords}
 
 def load_docs():
     while True:
@@ -160,118 +156,106 @@ def load_docs():
         if add_another == "yes":
             continue
         else:
-            break               
+            break
 
-def get_data_doc(queries,table_needed=False):
+def get_relevant_data(query_emebddings,query_keywords,doc,select_tables=False):
+    start_time = time.monotonic()
+    super_start_time = time.monotonic()
+    
+    doc_groups = doc["groups"]
+    doc_chunks = doc["chunks"]
+    doc_tables = doc["tables"]
+    doc_keywords = doc["keywords"]
+    doc_embeddings = doc["embeddings"]
+    doc_groups_means = doc["groups_mean"]
+    doc_table_emebeds = doc["table_embeds"]
+    doc_grouped_keywords = doc["groups_keywords"]
+    
+    doc_groups_means = np.stack(doc_groups_means)
+    
+    query_emebddings_sims = query_emebddings @ doc_groups_means.T
+    
+    print(f"--------------Embedding Sim Time: {time.monotonic() - start_time}-------------------------")
     start_time = time.monotonic()
     
-    query_embeddings = make_embeddings(queries)
-    query_embeddings = np.stack(query_embeddings)
+    query_keywords_score = []
     
-    query_tuple_keywords = make_keywords(queries)
+    for query_dict in query_keywords:
+        scores = []
     
-    if isinstance(query_tuple_keywords[0],tuple):
-        query_tuple_keywords = [query_tuple_keywords]
+        for group_dict in doc_grouped_keywords:
+            score = sum(value + group_dict[keyword]for keyword, value in query_dict.items() if keyword in group_dict)
+            scores.append(score)
+
+        query_keywords_score.append(scores)
     
-    query_keywords = [{m:c for m,c in keyword} for keyword in query_tuple_keywords]
+    query_keywords_score = np.array(query_keywords_score)
     
-    print(f"Embed and key time: {time.monotonic() - start_time}")
+    print(f"--------------Keyword Score Time: {time.monotonic() - start_time}-------------------------")
     start_time = time.monotonic()
     
-    retrieved_info = []
-        
-    for doc in loaded_docs:
-        embedding_sim = query_embeddings @ doc["group_means"].T
-        
-        print(f"Embedding sim time: {time.monotonic()  -start_time}")
-        start_time = time.monotonic()
-        
-        key_score = []
-
-        for query_dict in query_keywords:
-            scores = []
-        
-            for group_dict in doc["grouped_keywords"]:
-                score = sum(value + group_dict[keyword]for keyword, value in query_dict.items() if keyword in group_dict)
-                scores.append(score)
+    sims = query_emebddings_sims * 0.6 + 0.4 * np.log1p(query_keywords_score)
     
-            key_score.append(scores)
+    selected_groups_ids = []
+    
+    n = 5
+    for sim in sims:
+        ids = np.argsort(sim)[-min(n,len(sim)):]
+        selected_groups_ids.extend(ids)
+    
+    selected_groups_ids = set(selected_groups_ids)  
+    selected_chunks = []
+    selected_embeddings = []
+    selected_keywords = []
+    
+    for cur_selected_group_id in selected_groups_ids:
+        cur_group = doc_groups[cur_selected_group_id]
+
+        selected_embeddings.extend([doc_embeddings[cur_id] for cur_id in cur_group])
+        selected_chunks.extend([doc_chunks[cur_id] for cur_id in cur_group])
+        selected_keywords.extend([doc_keywords[cur_id] for cur_id in cur_group])
+
+    print(f"--------------Selecting Matching Chunks Time: {time.monotonic() - start_time}-------------------------")
+    start_time = time.monotonic()
+
+    selected_tables = []
+    selected_table_ids = []
+
+    if select_tables:
+        table_sims = query_emebddings @ doc_table_emebeds.T
         
-        key_score = np.array(key_score)
+        for sim in table_sims:
+            selected_ids = np.argwhere(sim>=0.4).flatten()
+            selected_table_ids.extend(selected_ids)
         
-        print(f"keyword Score Time: {time.monotonic() - start_time}")
-        
-        start_time = time.monotonic()
-        
-        sims = embedding_sim * 0.6 + 0.4 * np.log1p(key_score)
-        
-        selected_groups = []
-        
-        n = 5
-        for sim in sims:
-            ids = np.argsort(sim)[-min(n,len(sim)):]
-            selected_groups.extend(ids)
-            
-        selected_groups = set(selected_groups)  
-        selected_chunks = []
-        selected_embeddings = []
-        selected_keywords = []
-        
-        chunks = doc["chunks"]
-        embs = doc["embeddings"]
-        gs = doc['groups']
-                
-        for selected in selected_groups:
-            cur_g = gs[selected]
-            
-            selected_embeddings.extend([embs[g] for g in cur_g])
-            selected_chunks.extend([chunks[g] for g in cur_g])
-            selected_keywords.extend([doc["keywords"][g] for g in cur_g])
-                  
-        if selected_chunks:
-            retrieved_info.append({"doc_name":doc["doc_name"],"content":selected_chunks,"embeddings":np.stack(selected_embeddings),"keywords":selected_keywords})
-            
-        print(f"selecting_time {time.monotonic() - start_time}")
+        selected_table_ids = set(selected_table_ids)
+
+        if doc_tables:
+            selected_tables = [doc_tables[i] for i in selected_table_ids]
+    
+        print(f"--------------Table Comparing And Extracting Time Time: {time.monotonic() - start_time}-------------------------")
         start_time = time.monotonic()
     
-    table_k=4
-    
-    if table_needed:
-        for doc in loaded_docs:
-            if doc["tabels"] is not None:
-                tabels_sim = query_embeddings @ doc["tabel_embeds"].T
-                selected_tabels = []
-                
-                for sim in tabels_sim:
-                    ids = np.argsort(sim)[-min(len(sim),table_k):]
-                    selected_tabels.extend(ids)
-                
-                selected_tabels = set(selected_tabels)
-                
-                selected_tabels = [t for i,t in enumerate(doc["tabels"]) if i in selected_tabels]
-    
-                retrieved_info.append({"tabels":selected_tabels})
-    else:
-        retrieved_info.append({"tabels":None})
-    
-    final_info = []
-        
-    for doc in retrieved_info:
-        tabel = doc.get("tabels",0)
-        
-        if tabel:
-            final_info.append({"tabels":tabel})
-            continue
-        
-        embeddings = doc["embeddings"]
-        selected = rerank(embeddings=embeddings,query_embeddings=query_embeddings,query_keywords=query_keywords,keywords=doc["keywords"])
-        final_info.append({"doc_name":doc["doc_name"],"content":[doc["content"][g] for g in selected]})   
+    # rerank queries
 
-    return final_info
+    reranked_ids = rerank_selected_data(embeddings=selected_embeddings,query_embeddings=query_emebddings,query_keywords=query_keywords,keywords=selected_keywords)
+    
+    print(f"--------------Re Ranking Time: {time.monotonic() - start_time}-------------------------")
+    start_time = time.monotonic()
+    
+    selected_chunks = [doc_chunks[i] for i in reranked_ids]
 
-def rerank(embeddings,query_embeddings,query_keywords,keywords,top_k=10):
-    start_time= time.monotonic()
-    e_sims = query_embeddings @ embeddings.T
+    if selected_tables:
+        selected_chunks += selected_tables
+
+    print(f"--------------Total Time Taken In Retriving: {time.monotonic() - super_start_time}-------------------------")
+    start_time = time.monotonic()
+
+    return selected_chunks
+
+def rerank_selected_data(embeddings,query_embeddings,query_keywords,keywords,top_k=10):
+    embeddings = np.stack(embeddings)
+    emebedding_sims = query_embeddings @ embeddings.T
     
     key_score=[]
     
@@ -286,36 +270,41 @@ def rerank(embeddings,query_embeddings,query_keywords,keywords,top_k=10):
     
     key_score = np.array(key_score)
         
-    sims = 0.6 * e_sims + 0.4 * np.log1p(key_score)
+    weighted_combined_sims = 0.6 * emebedding_sims + 0.4 * np.log1p(key_score)
     
     selected = []
     
-    for sim in sims:
-        selects = sim.argsort()[-min(top_k,len(sim)):]
-        selected.extend(selects)
+    for sim in weighted_combined_sims:
+        selected_ids = sim.argsort()[-min(top_k,len(sim)):]
+        selected.extend(selected_ids)
     
     selected = set(selected)
     
-    print(f"rerank time: {time.monotonic() - start_time}")
     return selected
 
 if __name__ == "__main__":
     load_docs()
+    start_time = time.monotonic()
+    
     queries = [
     "How were neurons reconstructed and identified in the FlyWire connectome?",
-    "What methods did FlyWire use to trace individual neurons and determine their identities and classifications?"
-]
-    q_embeddings = make_embeddings(queries)
+    "What methods did FlyWire use to trace individual neurons and determine their identities and classifications?"]
+
+    query_embeddings = make_embeddings(queries)
+    query_keywords_tuple = make_keywords(queries)
     
+    if isinstance(query_keywords_tuple,tuple):
+        query_keywords_tuple = [query_keywords_tuple]
+    
+    query_keywords = [{m:c for m,c in tuplee} for tuplee in query_keywords_tuple]
+
+    pool = ThreadPoolExecutor(max_workers=5)
+    
+    data = list(pool.map(get_relevant_data,repeat(query_embeddings),repeat(query_keywords),loaded_docs,repeat(True)))
+
     tabel_needed = True
-    final_info = get_data_doc(queries=queries,table_needed=tabel_needed)
     
-    for d in final_info:
-        tabel = d.get("tabels",0)
-        if tabel:
-            print(tabel)
-            continue
-        
-        for c in d["content"]:
-            print(c)
-    
+    for d in data:
+        print(d)
+        print()
+        print()
